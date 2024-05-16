@@ -1,0 +1,277 @@
+---
+title: "Preliminary Analysis"
+format: 
+  html:
+    self-contained: true
+execute: 
+  warning: false
+---
+
+```{r}
+#| echo: false
+
+# libraries 
+library(tidyverse)
+library(haven)
+library(tidymodels)
+library(textrecipes)
+library(discrim)
+library(naivebayes)
+library(glmnet)
+library(hardhat)
+library(vip)
+library(here)
+library(themis)
+```
+
+## Data
+```{r}
+#| code-fold: true
+
+# import data and code major topics 
+data = read_dta(here("00_data/2013dataPSU.dta")) |> 
+  janitor::clean_names() |> 
+  mutate(major_topic = case_when(
+    major_code == 0 ~ "None",
+    major_code == 1 ~ "Economy",
+    major_code == 2 ~ "Civil Rights",
+    major_code == 3 ~ "Health",
+    major_code == 4 ~ "Agriculture",
+    major_code == 5 ~ "Labor",
+    major_code == 6 ~ "Education",
+    major_code == 7 ~ "Environment",
+    major_code == 8 ~ "Energy",
+    major_code == 9 ~ "Immigration",
+    major_code == 10 ~ "Transportation",
+    major_code == 12 ~ "Law",
+    major_code == 13 ~ "Social Welfare",
+    major_code == 14 ~ "Communities",
+    major_code == 15 ~ "Finance",
+    major_code == 16 ~ "Defense",
+    major_code == 17 ~ "Science",
+    major_code == 18 ~ "Trade",
+    major_code == 19 ~ "International",
+    major_code == 20 ~ "Operations",
+    major_code == 21 ~ "Public Lands",
+    major_code == 22 ~ "Other",
+  ))
+
+# plot outcomes
+data |> 
+  group_by(major_topic) |> 
+  count() |> 
+  ggplot(aes(reorder(major_topic, -n), n))+
+  geom_col(fill = "dodgerblue")+
+  theme_bw()+
+  labs(
+    title = "Number of Tweets per Topic - 2013",
+    x = NULL,
+    y = "Total Number of Tweets"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+```
+First, I split the data into training and testing sets, stratified to keep the same clss balanace of the full data. Below is the distributions of training set. 
+
+```{r}
+# split for analysis 
+
+set.seed(0701)
+
+split = initial_split(data, strata = major_topic)
+
+train = training(split)
+test = testing(split)
+```
+
+```{r}
+#| code-fold: true
+
+train |> 
+  group_by(major_topic) |> 
+  count() |> 
+  ggplot(aes(reorder(major_topic, -n), n))+
+  geom_col(fill = "dodgerblue")+
+  theme_bw()+
+  labs(
+    title = "Number of Tweets per Topic - Training Set",
+    x = NULL,
+    y = "Total Number of Tweets"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+
+## Preprocessing 
+
+For the work below, I am considering three model specifications. First, a basic model that looks just at the text of a tweet to predict policy topic. Second, a specification that adds bigrams, removes stop words, and stems the tokens. And third, a version of the second model that down samples the training set to achieve balance between topics. All models filter tokens for training down to the top 1000 for computational ease and utilizes the term frequency-inverse document frequency matrix to make classifications.
+
+
+```{r}
+# base recipe
+base_recipe = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text)
+
+# add ngrams, stop word removal, stemming 
+full_recipe = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text, token = "ngrams", options = list(n = 2, n_min = 1)) |>
+  step_stopwords(text, stopword_source = "snowball") |> 
+  step_stem(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text)
+
+# same as full, but with down sampling on topic of tweet
+downsample_recipe = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text, token = "ngrams", options = list(n = 2, n_min = 1)) |>
+  step_stopwords(text, stopword_source = "snowball") |> 
+  step_stem(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text) |> 
+  step_downsample(major_topic)
+```
+
+## Models
+```{r}
+#| echo: false
+#| include: false
+
+# create workflows
+base_wf = workflow() |> 
+  add_recipe(base_recipe)
+
+full_wf = workflow() |> 
+  add_recipe(full_recipe)
+
+ds_wf = workflow() |> 
+  add_recipe(downsample_recipe)
+
+# create cross validation folds 
+
+folds = vfold_cv(train)
+
+# create null model 
+null_classification <- null_model() %>%
+  set_engine("parsnip") %>%
+  set_mode("classification")
+
+#  null for base and full models
+base_null_rs <- workflow() %>%
+  add_recipe(base_recipe) %>%
+  add_model(null_classification) %>%
+  fit_resamples(
+    folds,
+    control = control_resamples(save_pred = T,
+                                verbose = T)
+  )
+#  null for downsampled model
+ds_null_rs = workflow() %>%
+  add_recipe(downsample_recipe) %>%
+  add_model(null_classification) %>%
+  fit_resamples(
+    folds,
+    control = control_resamples(save_pred = T,
+                                verbose = T)
+  )
+```
+
+### Naive Bayes Classification 
+```{r}
+#| echo: false
+
+# create naive bayes model specification 
+nb_spec = naive_Bayes() |> 
+  set_mode("classification") |> 
+  set_engine("naivebayes")
+
+# fit base model on training data
+nb_base_fit = base_wf |> 
+  add_model(nb_spec) |> 
+  fit(data = train)
+
+# fit full model on training data 
+nb_full_fit = full_wf |> 
+  add_model(nb_spec) |> 
+  fit(data = train)
+
+# fit down sample model 
+nb_ds_fit = ds_wf |> 
+  add_model(nb_spec) |> 
+  fit(data = train)
+```
+
+```{r}
+# cross validate the base model 
+# resample 
+nb_base_rs = fit_resamples(
+  base_wf |> add_model(nb_spec),
+  folds,
+  control = control_resamples(save_pred = T,
+                              verbose = T)
+)
+
+
+# resample 
+nb_full_rs = fit_resamples(
+  full_wf |> add_model(nb_spec),
+  folds,
+  control = control_resamples(save_pred = T,
+                              verbose = T)
+)
+
+# resample 
+nb_ds_rs = fit_resamples(
+  ds_wf |> add_model(nb_spec),
+  folds,
+  control = control_resamples(save_pred = T,
+                              verbose = T)
+)
+
+```
+
+### Multinomial Classification
+```{r}
+#| echo: false
+
+# create naive bayes model specification 
+multi_spec <- multinom_reg(penalty = 0.01, mixture = 1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+# resample 
+nb_base_rs = fit_resamples(
+  base_wf |> add_model(multi_spec),
+  folds,
+  control = control_resamples(save_pred = T,
+                              verbose = T)
+)
+
+
+# resample 
+nb_full_rs = fit_resamples(
+  full_wf |> add_model(multi_spec),
+  folds,
+  control = control_resamples(save_pred = T,
+                              verbose = T)
+)
+
+# resample 
+nb_ds_rs = fit_resamples(
+  ds_wf |> add_model(multi_spec),
+  folds,
+  control = control_resamples(save_pred = T,
+                              verbose = T)
+)
+
+collect_metrics(nb_base_rs)
+```
+```{r}
+collect_metrics(nb_base_rs)
+collect_metrics(nb_full_rs)
+collect_metrics(nb_ds_rs)
+```
+
