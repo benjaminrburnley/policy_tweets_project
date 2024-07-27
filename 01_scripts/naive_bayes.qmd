@@ -1,0 +1,142 @@
+---
+title: "Naive Bayes Specifications"
+format: 
+  html:
+    self-contained: true
+---
+
+```{r}
+# libaries 
+library(tidyverse)
+library(haven)
+library(tidymodels)
+library(textrecipes)
+library(discrim)
+library(naivebayes)
+library(glmnet)
+library(hardhat)
+library(vip)
+library(here)
+library(themis)
+theme_set(theme_bw())
+
+# data 
+data = read_rds("00_data/data_cleaned_13.rds")
+norts = data |> 
+  filter(retweet == 0)
+```
+
+# Exploratory Analysis 
+
+```{r}
+# outcome variable 
+data |> 
+  group_by(major_topic) |> 
+  count() |> 
+  ggplot(aes(reorder(major_topic, -n), n))+
+  geom_col(fill = "dodgerblue")+
+  theme_bw()+
+  labs(
+    title = "Number of Tweets per Topic - 2013",
+    x = NULL,
+    y = "Total Number of Tweets"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+# Preprocessing 
+
+```{r}
+# set seed for replication 
+set.seed(815)
+split = initial_split(data, strata = major_topic)
+
+# create testing set
+test = testing(split)
+# create training set 
+train = training(split)
+
+# create base recipe 
+nb_base = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text) |> 
+  step_normalize(all_predictors())
+
+# check prep
+nb_prep = prep(nb_base)
+
+# check bake
+nb_bake = bake(nb_prep, new_data = NULL)
+```
+
+# Workflows and Specifications 
+```{r}
+# null model 
+null_regression <- null_model() %>%
+  set_engine("parsnip") %>%
+  set_mode("regression")
+
+# naive bayes model 
+nb_model = naive_Bayes() |> 
+  set_mode("classification") |> 
+  set_engine("naivebayes")
+
+# naive bayes workflow 
+nb_wf = workflow() |> 
+  add_recipe(nb_base) |> 
+  add_model(nb_model)
+```
+
+
+# Fit 
+```{r}
+# fit model 
+nb_fit = nb_wf |> 
+  fit(train)
+
+
+
+```
+
+# Validation 
+```{r}
+# create folds 
+folds = vfold_cv(train)
+
+# 
+nb_rs <- fit_resamples(
+  nb_wf,
+  folds,
+  control = control_resamples(save_pred = TRUE, verbose = TRUE, parallel_over = "resamples")
+)
+```
+
+# Metrics
+
+```{r}
+# get predictions
+nb_predictions = predict(nb_fit, train)
+
+# predictions table 
+metrics = tibble(truth = as.factor(train$major_topic), prediction = nb_predictions$.pred_class)
+
+# fit accuracy
+accuracy(metrics, truth = truth, estimate = prediction)
+
+# resample metris
+nb_rs_predictions = collect_predictions(nb_rs)
+
+nb_rs_predictions %>%
+  group_by(id) %>%
+  roc_curve(truth = product, .pred_Credit) %>%
+  autoplot() +
+  labs(
+    color = NULL,
+    title = "ROC curve for US Consumer Finance Complaints",
+    subtitle = "Each resample fold is shown in a different color"
+  )
+```
+

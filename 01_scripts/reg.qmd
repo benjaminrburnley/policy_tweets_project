@@ -1,0 +1,162 @@
+---
+title: "Preliminary Analysis"
+format: 
+  html:
+    self-contained: true
+execute: 
+  warning: false
+---
+
+```{r}
+#| echo: false
+
+# libraries 
+library(tidyverse)
+library(haven)
+library(tidymodels)
+library(textrecipes)
+library(discrim)
+library(naivebayes)
+library(glmnet)
+library(hardhat)
+library(vip)
+library(here)
+library(themis)
+```
+
+## Data
+```{r}
+#| code-fold: true
+
+# import data and code major topics 
+data = read_dta(here("00_data/2013dataPSU.dta")) |> 
+  janitor::clean_names() |> 
+  mutate(major_topic = case_when(
+    major_code == 0 ~ "None",
+    major_code == 1 ~ "Economy",
+    major_code == 2 ~ "Civil Rights",
+    major_code == 3 ~ "Health",
+    major_code == 4 ~ "Agriculture",
+    major_code == 5 ~ "Labor",
+    major_code == 6 ~ "Education",
+    major_code == 7 ~ "Environment",
+    major_code == 8 ~ "Energy",
+    major_code == 9 ~ "Immigration",
+    major_code == 10 ~ "Transportation",
+    major_code == 12 ~ "Law",
+    major_code == 13 ~ "Social Welfare",
+    major_code == 14 ~ "Communities",
+    major_code == 15 ~ "Finance",
+    major_code == 16 ~ "Defense",
+    major_code == 17 ~ "Science",
+    major_code == 18 ~ "Trade",
+    major_code == 19 ~ "International",
+    major_code == 20 ~ "Operations",
+    major_code == 21 ~ "Public Lands",
+    major_code == 22 ~ "Other",
+  ))
+
+# plot outcomes
+data |> 
+  group_by(major_topic) |> 
+  count() |> 
+  ggplot(aes(reorder(major_topic, -n), n))+
+  geom_col(fill = "dodgerblue")+
+  theme_bw()+
+  labs(
+    title = "Number of Tweets per Topic - 2013",
+    x = NULL,
+    y = "Total Number of Tweets"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+# Preprocessing 
+
+```{r}
+# quick manual cleaning 
+clean = data |> 
+  mutate(retweet = if_else(str_detect(pattern = "^RT", string = text), 1, 0),
+         text = str_to_lower(text), # to lower case
+         text = str_remove(pattern = "[:punct:]", string = text)) # remove punctuation
+
+# no retweets data
+norts = clean |> 
+  filter(retweet == 0)
+
+# create split
+set.seed(0701)
+split = initial_split(norts)
+
+# training set
+train = training(split)
+
+# testing set 
+test = testing(split)
+
+# recipes 
+# base recipe with very few steps
+base_recipe = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text)
+
+# add ngrams, stop word removal, stemming 
+full_recipe = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text, token = "ngrams", options = list(n = 2, n_min = 1)) |>
+  step_stopwords(text, stopword_source = "snowball") |> 
+  step_stem(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text)
+
+# same as full, but with down sampling on topic of tweet
+downsample_recipe = recipe(major_topic ~ text, data = train) |> 
+  step_tokenize(text, token = "ngrams", options = list(n = 2, n_min = 1)) |>
+  step_stopwords(text, stopword_source = "snowball") |> 
+  step_stem(text) |> 
+  step_tokenfilter(text, max_tokens = 1000) |> 
+  step_tfidf(text) |> 
+  step_downsample(major_topic)
+
+# create workflows
+base_wf = workflow() |> 
+  add_recipe(base_recipe)
+
+full_wf = workflow() |> 
+  add_recipe(full_recipe)
+
+ds_wf = workflow() |> 
+  add_recipe(downsample_recipe)
+```
+
+
+# Multinomial Approach 
+
+```{r}
+# multinomial specification 
+multi_spec <- multinom_reg(penalty = 0.01, mixture = 1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+# fit base 
+mutli_base_fit = base_wf |> 
+  add_model(multi_spec) |> 
+  fit(data = train)
+
+# base predictions 
+p1 = predict(mutli_base_fit, train)
+
+# predictions 
+preds1 = tibble(truth = as.factor(train$major_topic), predicted= p1$.pred_class)
+
+# metrics
+conf_mat(preds1, truth, predicted)
+accuracy(preds1, truth, predicted)
+precision(preds1, truth = truth, estimate = predicted)
+specificity(preds1, truth, predicted)
+recall(preds1, truth, predicted)
+f_meas(preds1, truth, predicted)
+```            
+

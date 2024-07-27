@@ -1,0 +1,79 @@
+---
+title: "Cleaning 2013 Data"
+format: 
+  html:
+    self-contained: true
+---
+```{r, setup}
+options(scipen = 999)
+# libraries 
+library(tidyverse)
+library(readstata13)
+
+# data
+import = read.dta13("00_data/2013dataPSU.dta", encoding = "macroman")
+
+```
+
+# Clean Names and Classify Policy Topics 
+```{r}
+data = import |> 
+  janitor::clean_names() |> 
+  mutate(major_topic = case_when(
+    major_code == 0 ~ "None",
+    major_code == 1 ~ "Economy",
+    major_code == 2 ~ "Civil Rights",
+    major_code == 3 ~ "Health",
+    major_code == 4 ~ "Agriculture",
+    major_code == 5 ~ "Labor",
+    major_code == 6 ~ "Education",
+    major_code == 7 ~ "Environment",
+    major_code == 8 ~ "Energy",
+    major_code == 9 ~ "Immigration",
+    major_code == 10 ~ "Transportation",
+    major_code == 12 ~ "Law",
+    major_code == 13 ~ "Social Welfare",
+    major_code == 14 ~ "Communities",
+    major_code == 15 ~ "Finance",
+    major_code == 16 ~ "Defense",
+    major_code == 17 ~ "Science",
+    major_code == 18 ~ "Trade",
+    major_code == 19 ~ "International",
+    major_code == 20 ~ "Operations",
+    major_code == 21 ~ "Public Lands",
+    major_code == 22 ~ "Other",
+  )) |> 
+  mutate(major_topic = if_else(policy_content == 1 & major_topic == "None", "Other", major_topic)) |> 
+  mutate(encoding = Encoding(text))
+```
+
+To standardize the names of the variables in the dataset, I used the `clean_names` command. From there, I used the provided `.dic` file to name the major policy topics from the `major_code` variable. The `.dic` file listed a category of "Other", though none of the tweets were classified as "Other" as their policy topic. I compared the policy topic to the variable `policy_content` and found that 1360 of the tweets with a major code topic of "None" were coded as having policy content. For these 1360 tweets, I coded the `major_topic` to be "Other" as they contain policy content just not one of the twenty categories listed in the `.dic` file.
+
+# Text Preprocessing Steps
+
+```{r}
+# data cleaning steps 
+data_cleaned = data |> 
+  mutate(retweet = if_else(str_detect(pattern = "^RT", string = text), 1, 0), # create retweet binary
+         text = str_to_lower(text), # to lower case
+         text = str_remove_all(string = text, pattern = "[:punct:]"),
+         text = str_remove_all(string = text, pattern = "http\\w*"),
+         text = str_replace_all(string = text, pattern = " amp ", replacement = " "),
+         text = str_remove_all(string = text, pattern = "<\\w*>"))
+```
+
+The following preprocessing steps were taken here in data cleaning to prevent from having to do them for every model that is run in the future. These are steps that I am confident every model would use. 
+
+Preprocessing steps:
+- create `RT` dummy variable to designate that a tweet is a retweet. 
+- take all text to lower case
+- remove all punctuation from tweets
+- remove all links 
+- remove "amp" leftovers from encoding
+- remove leftovers from emojis and other symbols 
+
+# Save Data for Analysis
+```{r}
+write_rds(data_cleaned, "00_data/data_cleaned_13.rds")
+```
+
