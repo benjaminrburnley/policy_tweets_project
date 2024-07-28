@@ -17,10 +17,11 @@ library(vetiver)
 # data --------------------------------------------------------------------
 
 data = read_rds("00_data/data_cleaned_2013.rds")
+dwnom = read_csv("00_data/dw_all.csv")
 
 norts = data |> 
   filter(retweet == 0) |> 
-  mutate(name_state = paste(name, state))
+  mutate(name_state = paste(name, state, sep = "-"))
 
 # create split
 set.seed(0701)
@@ -38,7 +39,7 @@ folds = vfold_cv(train)
 # preprocessing -----------------------------------------------------------
 
 ## base recipe with very few steps
-base_recipe = recipe(policy_area ~ text + name_state + party_id + age + party_leader + ideology, data = train) |>
+base_recipe = recipe(policy_area ~ text + name_state, data = train) |>
   step_tokenize(text) |>
   step_stopwords(text, stopword_source = "snowball") |>
   step_stem(text) |>
@@ -46,12 +47,12 @@ base_recipe = recipe(policy_area ~ text + name_state + party_id + age + party_le
   step_tfidf(text) |>
   step_dummy(name_state)
 
-base_recipe = recipe(policy_area ~ text , data = train) |>
-  step_tokenize(text) |>
-  step_stopwords(text, stopword_source = "snowball") |>
-  step_stem(text) |>
-  step_tokenfilter(text, max_tokens = 5000) |>
-  step_tfidf(text)
+# base_recipe = recipe(policy_area ~ text , data = train) |>
+#   step_tokenize(text) |>
+#   step_stopwords(text, stopword_source = "snowball") |>
+#   step_stem(text) |>
+#   step_tokenfilter(text, max_tokens = 5000) |>
+#   step_tfidf(text)
 
 
 # create sparse bluepring - see HVITFELDT AND SILGE 2022 
@@ -153,9 +154,9 @@ collect_predictions(fitted) |>
 ggsave("figures/roc_curves.png")
 
 test_output = test |>
-  mutate(truth = as.factor(policy_area)) |> 
-  bind_cols(final_preds) |> 
-  rename("estimate" = ".pred_class")
+  mutate(truth = as.factor(policy_area)) |>  
+  bind_cols(final_preds$.pred_class) |> 
+  rename("estimate" = "...43")
 
 accuracy(test_output, truth, estimate)
 recall(test_output, truth, estimate)
@@ -193,7 +194,7 @@ data_15 = read_rds("00_data/data_cleaned_2015.rds")
 
 norts_15 = data_15 |> 
   filter(retweet == 0) |> 
-  mutate(name_state = paste(name, state))
+  mutate(name_state = paste(name, state, sep = "-"))
 
 fit_15 = reg_multnom_model |> 
   fit(data = norts_15)
